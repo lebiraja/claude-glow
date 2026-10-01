@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "claude-glow hook start",   "async": true }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "claude-glow hook working", "async": true }] }],
+    "PreToolUse":       [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "claude-glow hook ask", "async": true }] }],
+    "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "claude-glow hook working", "async": true }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "claude-glow hook ask",     "async": true }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "claude-glow hook done",    "async": true }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "claude-glow hook end",     "async": true }] }]
+  }
+}

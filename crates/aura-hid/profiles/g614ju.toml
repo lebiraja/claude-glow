@@ -1,0 +1,67 @@
+name = "ASUS ROG Strix G614JU"
+vid = 0x0b05
+pid = 0x19b6
+keyboard_default = "#ffffff"
+
+# Packets that return the laptop to its saved built-in mode (static, 0x41 white).
+restore = [
+  [0x5d, 0xb3, 0x00, 0x00, 0x41, 0x41, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+  [0x5d, 0xb5],
+  [0x5d, 0xb4],
+]
+
+# Zoned direct frame, streamed every ~50 ms. See docs/protocol.md.
+[packet]
+len = 64
+init = [0x5d, 0xbc]
+header = [0x5d, 0xbc, 0x01, 0x01, 0x04]
+
+[[leds]]
+name = "key1"
+group = "keys"
+offset = 9
+
+[[leds]]
+name = "key2"
+group = "keys"
+offset = 12
+
+[[leds]]
+name = "key3"
+group = "keys"
+offset = 15
+
+[[leds]]
+name = "key4"
+group = "keys"
+offset = 18
+
+[[leds]]
+name = "bar1"
+group = "bar"
+offset = 27
+
+[[leds]]
+name = "bar2"
+group = "bar"
+offset = 30
+
+[[leds]]
+name = "bar3"
+group = "bar"
+offset = 33
+
+[[leds]]
+name = "bar4"
+group = "bar"
+offset = 36
+
+[[leds]]
+name = "bar5"
+group = "bar"
+offset = 39
+
+[[leds]]
+name = "bar6"
+group = "bar"
+offset = 42

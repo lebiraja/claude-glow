@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["crates/aura-hid", "crates/claude-glow"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/lebiraja/claude-glow"

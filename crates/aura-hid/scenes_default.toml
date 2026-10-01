@@ -1,0 +1,22 @@
+# Scene per Claude state. effect = static | breathe | pulse
+[none]
+effect = "static"
+colour = "#ffffff"
+
+[idle]
+effect = "static"
+colour = "#0000ff"
+
+[working]
+effect = "breathe"
+colour = "#ffb000"
+period_ms = 1600
+
+[ask]
+effect = "pulse"
+colour = "#ff0000"
+period_ms = 700
+
+[done]
+effect = "static"
+colour = "#00ff00"

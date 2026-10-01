@@ -1,0 +1,10 @@
+[Unit]
+Description=Claude Glow lightbar daemon
+
+[Service]
+ExecStart=%h/.local/bin/claude-glow daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

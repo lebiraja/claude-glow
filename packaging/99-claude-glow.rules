@@ -1,0 +1,2 @@
+# Let the logged-in user write to the ASUS N-KEY (Aura) HID device without root.
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="19b6", TAG+="uaccess"
