@@ -1,11 +1,82 @@
 {
   "hooks": {
-    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "claude-glow hook start",   "async": true }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "claude-glow hook working", "async": true }] }],
-    "PreToolUse":       [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "claude-glow hook ask", "async": true }] }],
-    "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "claude-glow hook working", "async": true }] }],
-    "Notification":     [{ "hooks": [{ "type": "command", "command": "claude-glow hook ask",     "async": true }] }],
-    "Stop":             [{ "hooks": [{ "type": "command", "command": "claude-glow hook done",    "async": true }] }],
-    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "claude-glow hook end",     "async": true }] }]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook start",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook working",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook ask",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook working",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook ask",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook done",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-glow hook end",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
   }
 }

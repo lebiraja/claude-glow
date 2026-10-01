@@ -1,18 +1,30 @@
-use std::io;
-use std::os::unix::net::UnixListener;
+use std::fs::{self, Permissions};
+use std::io::{self, BufRead, BufReader, Read};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, sleep};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use aura_hid::{Frame, HidSink, HidrawDevice, Profile, Rgb, Scenes};
 
-use crate::ipc;
 use crate::state::{Sessions, State};
+use crate::{ipc, procfs};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(50);
+const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+const DEVICE_RETRY: Duration = Duration::from_secs(1);
+const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const CLIENT_MAX_BYTES: u64 = 64 * 1024;
 /// Fraction of the remaining distance to the target covered per frame (smooth fades, soft comet trail).
 const SMOOTHING: f32 = 0.4;
+
+type Shared = Arc<Mutex<Sessions>>;
+
+fn lock(sessions: &Shared) -> MutexGuard<'_, Sessions> {
+    sessions.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 pub fn restore(profile: &Profile, dev: &mut impl HidSink) -> io::Result<()> {
     profile.restore.iter().try_for_each(|p| dev.write(p))
@@ -34,26 +46,44 @@ fn bar_targets(scenes: &Scenes, slots: &[State], leds: usize, t: Duration) -> Ve
     out
 }
 
+fn handle_client(stream: UnixStream, sessions: &Shared) {
+    if stream.set_read_timeout(Some(CLIENT_READ_TIMEOUT)).is_err() {
+        return;
+    }
+    for line in BufReader::new(stream.take(CLIENT_MAX_BYTES)).lines().map_while(Result::ok) {
+        if let Some(msg) = ipc::parse_line(&line) {
+            lock(sessions).apply(&msg, Instant::now(), SystemTime::now());
+        }
+    }
+}
+
+fn open_device(profile: &Profile) -> io::Result<HidrawDevice> {
+    let mut dev = HidrawDevice::open(profile)?;
+    dev.write(&profile.packet.init)?;
+    Ok(dev)
+}
+
 pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
-    let sessions = Arc::new(Mutex::new(Sessions::default()));
+    let path = ipc::socket_path();
+    if UnixStream::connect(&path).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AddrInUse, "another claude-glow daemon is already running"));
+    }
+    let _ = fs::remove_file(&path);
+    let listener = UnixListener::bind(&path)?;
+    fs::set_permissions(&path, Permissions::from_mode(0o600))?;
+
+    let sessions: Shared = Arc::default();
     let running = Arc::new(AtomicBool::new(true));
     {
         let running = running.clone();
         ctrlc::set_handler(move || running.store(false, Ordering::SeqCst)).map_err(io::Error::other)?;
     }
-
-    let path = ipc::socket_path();
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)?;
     {
         let sessions = sessions.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                for line in ipc::read_lines(stream) {
-                    if let Some((event, id)) = ipc::parse_line(&line) {
-                        sessions.lock().expect("sessions lock").apply(&id, event, Instant::now());
-                    }
-                }
+                let sessions = sessions.clone();
+                thread::spawn(move || handle_client(stream, &sessions));
             }
         });
     }
@@ -61,10 +91,15 @@ pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
     let bar: Vec<usize> = profile.group_indices("bar").collect();
     let mut shown = vec![[0.0_f32; 3]; bar.len()];
     let start = Instant::now();
-    let mut dev: Option<HidrawDevice> = None;
+    let (mut dev, mut retry_at, mut warned) = (None::<HidrawDevice>, start, false);
+    let mut last_sweep = start;
     while running.load(Ordering::SeqCst) {
         let now = Instant::now();
-        let slots = sessions.lock().expect("sessions lock").slots(now, bar.len());
+        if now.duration_since(last_sweep) >= SWEEP_INTERVAL {
+            last_sweep = now;
+            lock(&sessions).sweep(now, SystemTime::now(), procfs::claude_alive, procfs::transcript_interrupted);
+        }
+        let slots = lock(&sessions).slots(now, bar.len());
         let targets = bar_targets(scenes, &slots, bar.len(), now - start);
 
         let mut frame = Frame::new(profile);
@@ -76,21 +111,34 @@ pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
             frame.set(*led, Rgb::new(cur[0].round() as u8, cur[1].round() as u8, cur[2].round() as u8));
         }
 
-        if dev.is_none() {
-            dev = HidrawDevice::open(profile).ok().and_then(|mut d| d.write(&profile.packet.init).ok().map(|()| d));
+        if dev.is_none() && now >= retry_at {
+            match open_device(profile) {
+                Ok(d) => {
+                    eprintln!("lightbar device connected");
+                    (dev, warned) = (Some(d), false);
+                }
+                Err(e) => {
+                    if !warned {
+                        eprintln!("lightbar device unavailable ({e}); retrying every {}s", DEVICE_RETRY.as_secs());
+                        warned = true;
+                    }
+                    retry_at = now + DEVICE_RETRY;
+                }
+            }
         }
         if let Some(d) = dev.as_mut() {
-            if d.write(&frame.packet(profile)).is_err() {
-                dev = None;
+            if let Err(e) = d.write(&frame.packet(profile)) {
+                eprintln!("lightbar write failed ({e}); reconnecting");
+                (dev, retry_at) = (None, now + DEVICE_RETRY);
             }
         }
         sleep(FRAME_INTERVAL);
     }
 
     if let Some(mut d) = dev.or_else(|| HidrawDevice::open(profile).ok()) {
-        restore(profile, &mut d)?;
+        let _ = restore(profile, &mut d);
     }
-    let _ = std::fs::remove_file(&path);
+    let _ = fs::remove_file(&path);
     Ok(())
 }
 
@@ -108,7 +156,7 @@ mod tests {
         .expect("test scenes are valid")
     }
 
-    fn amber(t: &[Rgb]) -> usize {
+    fn orange(t: &[Rgb]) -> usize {
         t.iter().filter(|c| c.r > 200).count()
     }
 
@@ -151,13 +199,20 @@ mod tests {
     }
 
     #[test]
+    fn missing_scene_renders_dark_instead_of_panicking() {
+        let targets = bar_targets(&Scenes::from_toml("").unwrap(), &[State::Ask], 6, Duration::ZERO);
+
+        assert_eq!(targets, vec![Rgb::BLACK; 6]);
+    }
+
+    #[test]
     fn working_comet_lights_the_head_end_first_and_moves() {
         let scenes = Scenes::bundled();
 
         let start = bar_targets(&scenes, &[State::Working], 6, Duration::ZERO);
         let middle = bar_targets(&scenes, &[State::Working], 6, Duration::from_millis(900));
 
-        assert_eq!(amber(&start), 1);
+        assert_eq!(orange(&start), 1);
         assert!(start[0].r > start[5].r);
         assert!(middle[5].r > middle[0].r);
     }

@@ -1,8 +1,9 @@
 mod daemon;
 mod ipc;
+mod procfs;
 mod state;
 
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -11,6 +12,7 @@ use aura_hid::{Frame, HidrawDevice, Profile, Rgb, Scenes};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
+use ipc::Message;
 use state::Event;
 
 #[derive(Parser)]
@@ -47,28 +49,49 @@ enum Command {
 #[derive(Deserialize, Default)]
 struct HookInput {
     session_id: Option<String>,
+    transcript_path: Option<PathBuf>,
     notification_type: Option<String>,
 }
 
+/// Bundled scenes, overridden per scene by `~/.config/claude-glow/scenes.toml` when it exists and parses.
 fn scenes() -> Scenes {
     let user = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .map(|d| d.join("claude-glow/scenes.toml"));
-    match user.and_then(|p| std::fs::read_to_string(p).ok()) {
-        Some(src) => Scenes::from_toml(&src).expect("invalid ~/.config/claude-glow/scenes.toml"),
-        None => Scenes::bundled(),
+    let Some(src) = user.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return Scenes::bundled();
+    };
+    match Scenes::from_toml(&src) {
+        Ok(custom) => Scenes::bundled().merged(custom),
+        Err(e) => {
+            eprintln!("ignoring invalid scenes.toml, using bundled scenes: {e}");
+            Scenes::bundled()
+        }
     }
+}
+
+/// Notifications that mean Claude is waiting on the user; others (idle reminders, auth) are not questions.
+fn is_question(notification_type: Option<&str>) -> bool {
+    notification_type.is_none_or(|t| matches!(t, "permission_prompt" | "elicitation_dialog"))
 }
 
 fn hook(event: Event) {
     let mut raw = String::new();
-    let _ = io::stdin().read_to_string(&mut raw);
+    if !io::stdin().is_terminal() {
+        let _ = io::stdin().read_to_string(&mut raw);
+    }
     let input: HookInput = serde_json::from_str(&raw).unwrap_or_default();
-    if event == Event::Ask && input.notification_type.as_deref() == Some("idle_prompt") {
+    if event == Event::Ask && !is_question(input.notification_type.as_deref()) {
         return;
     }
-    let _ = ipc::send(event, input.session_id.as_deref().unwrap_or("unknown"));
+    let msg = Message {
+        event,
+        session: input.session_id.unwrap_or_else(|| "unknown".to_owned()),
+        pid: procfs::claude_ancestor(),
+        transcript: input.transcript_path,
+    };
+    let _ = ipc::send(&msg);
 }
 
 fn probe(profile: &Profile, target: &str, colour: Rgb, secs: u64) -> io::Result<()> {
@@ -100,8 +123,22 @@ fn main() -> io::Result<()> {
             hook(event);
             Ok(())
         }
-        Command::Send { event, session } => ipc::send(event, &session),
+        Command::Send { event, session } => ipc::send(&Message { event, session, pid: None, transcript: None }),
         Command::Probe { target, colour, secs } => probe(&profile, &target, colour, secs),
         Command::Restore => daemon::restore(&profile, &mut HidrawDevice::open(&profile)?),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_permission_and_elicitation_notifications_are_questions() {
+        assert!(is_question(None));
+        assert!(is_question(Some("permission_prompt")));
+        assert!(is_question(Some("elicitation_dialog")));
+        assert!(!is_question(Some("idle_prompt")));
+        assert!(!is_question(Some("auth_success")));
     }
 }

@@ -46,10 +46,22 @@ slot by priority `Ask > Working > Done > Idle`. No sessions shows the `none` sce
 Effects are evaluated per LED with a position along the segment (0..1), which is how the comet moves. The comet head
 eases in and out at each end and its tail trails behind it.
 
-## Failure behaviour
-- The hook command always exits 0, even if the daemon is down, so Claude is never blocked.
-- If the HID write fails (resume from suspend, device re-enumeration), the daemon reopens the device on the next frame.
-- On SIGTERM/SIGINT the daemon writes the saved built-in mode back so lighting returns to normal.
+## Failure behaviour and edge cases
+| Situation | Behaviour |
+|---|---|
+| User interrupts Claude (Esc) or denies a permission | No `Stop` hook fires, but Claude Code writes `[Request interrupted by user…]` as the last transcript entry. The daemon checks the transcript of Working/Ask sessions every second and returns them to idle. |
+| Claude is killed or the terminal closes | No `SessionEnd`. Hooks record the owning `claude` pid; the daemon drops sessions whose process is gone (pid reuse is guarded by checking the process name). |
+| Missed events of any kind | Working/Ask with no event for 30 min falls back to idle; any session silent for 12 h is dropped. |
+| Repeated `SessionStart` (resume, compact) | Ignored for a session that already exists, so a busy session isn't reset to idle. |
+| Daemon down, or hook input is garbage | The hook always exits 0 and never blocks (2 s timeout, no TTY read). Sessions opened while the daemon was down appear at their next event. |
+| Second daemon started | Refuses to start if the socket answers, so it can't hijack the first one. |
+| Stale socket after a crash | Removed on start. The socket is `0600`. |
+| Slow, stuck or hostile client | One thread per connection, 2 s read timeout, 64 KiB cap, malformed lines ignored. A poisoned lock is recovered, not fatal. |
+| Device missing, or lost on suspend | The daemon keeps running, logs once, and retries every second; frames resume automatically. |
+| Daemon crash (`kill -9`) | The firmware reverts to your saved lighting mode when frames stop. A clean stop writes the restore packets itself (best effort). |
+| Invalid or partial `scenes.toml` | Invalid: logged and ignored. Partial: only the scenes it defines are overridden. |
+| Scene name missing | That segment renders dark instead of crashing. |
+| More than 6 sessions | Overflow folds into the last LED at the highest priority, so a question is never hidden. |
 
 ## Configuration
 - `~/.config/claude-glow/scenes.toml` (optional): overrides the bundled scenes.

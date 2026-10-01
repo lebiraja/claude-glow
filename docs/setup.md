@@ -41,7 +41,7 @@ claude-glow send end                       # back to white
 
 Merge `packaging/hooks.json` into the `hooks` object of `~/.claude/settings.json`. Hook arrays are lists, so
 append these entries to any arrays you already have rather than replacing them. Hooks are read at session
-start, so open a **new** Claude session afterwards.
+start, so open a **new** Claude session afterwards. The hooks run synchronously with a 2 s timeout so events always arrive in order.
 
 | Hook | Sends | Effect |
 |---|---|---|
@@ -51,7 +51,9 @@ start, so open a **new** Claude session afterwards.
 | `Stop` | `done` | green for 8 s, then blue |
 | `SessionEnd` | `end` | removes the session |
 
-`Notification` events of type `idle_prompt` are ignored, so the bar doesn't turn red just because you walked away.
+Only `permission_prompt` and `elicitation_dialog` notifications turn the bar red. Idle reminders are ignored, so it doesn't go red just because you walked away.
+
+Pressing **Esc** to interrupt, or killing Claude, is detected automatically (see the edge-case table in [architecture.md](architecture.md)).
 
 ## Day to day
 
