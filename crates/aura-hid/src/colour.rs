@@ -23,7 +23,7 @@ impl Rgb {
 
     pub fn lerp(self, to: Rgb, k: f32) -> Self {
         let k = k.clamp(0.0, 1.0);
-        let f = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
+        let f = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * k).round() as u8;
         Self::new(f(self.r, to.r), f(self.g, to.g), f(self.b, to.b))
     }
 }

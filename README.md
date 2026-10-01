@@ -5,10 +5,14 @@ Turn your laptop's **lightbar** into a live status light for [Claude Code](https
 | Claude is… | Lightbar |
 |---|---|
 | not running | white |
-| open, waiting for you | blue |
-| working | amber, breathing |
+| open, waiting for you | blue light sweeping slowly end to end and back |
+| working | Claude-orange comet with a faint white tail, easing at each end |
 | asking you a question / needs permission | red, pulsing |
 | just finished | green for 8 s, then blue |
+
+**Several sessions?** Each open session gets its own segment of the bar (2 sessions: halves, 3: thirds, up to one LED
+each for 6). Segments keep their order and show their own state. With more than 6 sessions the extras share the last
+LED at their highest priority, so a question is never hidden.
 
 The keyboard backlight is left alone. Colours and effects are editable (see [Customising](#customising)).
 
@@ -32,8 +36,8 @@ Claude Code hook ──► claude-glow hook <event> ──► Unix socket ──
 ```
 
 - Hooks fire on Claude Code events and send one line to the daemon.
-- The daemon tracks every open session and shows the highest-priority state (ask > working > done > idle).
-- It renders the current scene at 20 fps with a 300 ms crossfade. The firmware only holds a custom colour while frames keep arriving.
+- The daemon tracks every open session and gives each one a segment of the bar, showing that session's state.
+- It renders the scenes at 20 fps with smoothing between frames. The firmware only holds a custom colour while frames keep arriving.
 - On stop (or crash) the daemon restores your saved lighting mode.
 
 ## Quick start
@@ -62,9 +66,12 @@ systemctl --user restart claude-glow
 
 ```toml
 [working]
-effect = "breathe"     # static | breathe | pulse
-colour = "#ffb000"
-period_ms = 1600
+effect = "comet"       # static | breathe | pulse | comet
+colour = "#dd4c12"     # head colour
+tail_colour = "#ffffff" # comet only: colour at the far end of the tail (optional)
+period_ms = 1800       # one full trip there and back
+tail = 0.5             # comet only: tail length as a fraction of the bar
+floor = 0.02           # comet only: brightness far from the head (0..1)
 ```
 
 The five scene names are `none`, `idle`, `working`, `ask` and `done`. The "done" hold time is the `DONE_HOLD`

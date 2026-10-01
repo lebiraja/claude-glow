@@ -38,6 +38,7 @@ pub enum Event {
 struct Entry {
     state: State,
     since: Instant,
+    born: Instant,
 }
 
 impl Entry {
@@ -65,16 +66,21 @@ impl Sessions {
             Event::Ask => State::Ask,
             Event::Done => State::Done,
         };
-        self.0.insert(session.to_owned(), Entry { state, since: now });
+        let born = self.0.get(session).map_or(now, |e| e.born);
+        self.0.insert(session.to_owned(), Entry { state, since: now, born });
     }
 
-    /// Highest-priority state across live sessions, or None when no session is open.
-    pub fn displayed(&self, now: Instant) -> Option<State> {
-        self.0
-            .values()
-            .filter(|e| now.duration_since(e.since) < SESSION_TTL)
-            .map(|e| e.effective(now))
-            .max()
+    /// One state per live session, in the order sessions started, at most `max` entries.
+    /// Sessions past the limit are folded into the last slot at their highest priority.
+    pub fn slots(&self, now: Instant, max: usize) -> Vec<State> {
+        let mut live: Vec<_> = self.0.iter().filter(|(_, e)| now.duration_since(e.since) < SESSION_TTL).collect();
+        live.sort_by_key(|(id, e)| (e.born, id.as_str()));
+        let mut slots: Vec<State> = live.iter().map(|(_, e)| e.effective(now)).collect();
+        if slots.len() > max {
+            let folded = slots.split_off(max - 1).into_iter().max().expect("overflow is non-empty");
+            slots.push(folded);
+        }
+        slots
     }
 }
 
@@ -83,21 +89,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_sessions_shows_nothing() {
-        assert_eq!(Sessions::default().displayed(Instant::now()), None);
+    fn no_sessions_gives_no_slots() {
+        assert!(Sessions::default().slots(Instant::now(), 6).is_empty());
     }
 
     #[test]
-    fn highest_priority_wins_across_sessions() {
-        let now = Instant::now();
+    fn each_session_gets_a_slot_in_start_order() {
+        let t0 = Instant::now();
         let mut s = Sessions::default();
-        s.apply("a", Event::Start, now);
-        s.apply("b", Event::Working, now);
-        assert_eq!(s.displayed(now), Some(State::Working));
+        s.apply("b", Event::Working, t0);
+        s.apply("a", Event::Ask, t0 + Duration::from_secs(1));
 
-        s.apply("a", Event::Ask, now);
+        assert_eq!(s.slots(t0 + Duration::from_secs(2), 6), vec![State::Working, State::Ask]);
+    }
 
-        assert_eq!(s.displayed(now), Some(State::Ask));
+    #[test]
+    fn slot_order_is_stable_when_a_session_changes_state() {
+        let t0 = Instant::now();
+        let mut s = Sessions::default();
+        s.apply("a", Event::Start, t0);
+        s.apply("b", Event::Start, t0 + Duration::from_secs(1));
+
+        s.apply("a", Event::Done, t0 + Duration::from_secs(2));
+
+        assert_eq!(s.slots(t0 + Duration::from_secs(3), 6), vec![State::Done, State::Idle]);
+    }
+
+    #[test]
+    fn overflow_sessions_fold_into_last_slot_by_priority() {
+        let t0 = Instant::now();
+        let mut s = Sessions::default();
+        for (i, (id, ev)) in [("a", Event::Start), ("b", Event::Start), ("c", Event::Working), ("d", Event::Ask)].into_iter().enumerate() {
+            s.apply(id, ev, t0 + Duration::from_secs(i as u64));
+        }
+
+        assert_eq!(s.slots(t0 + Duration::from_secs(9), 3), vec![State::Idle, State::Idle, State::Ask]);
     }
 
     #[test]
@@ -106,19 +132,19 @@ mod tests {
         let mut s = Sessions::default();
         s.apply("a", Event::Done, t0);
 
-        assert_eq!(s.displayed(t0 + Duration::from_secs(7)), Some(State::Done));
-        assert_eq!(s.displayed(t0 + Duration::from_secs(8)), Some(State::Idle));
+        assert_eq!(s.slots(t0 + Duration::from_secs(7), 6), vec![State::Done]);
+        assert_eq!(s.slots(t0 + Duration::from_secs(8), 6), vec![State::Idle]);
     }
 
     #[test]
-    fn ending_last_session_clears_display() {
+    fn ending_last_session_clears_slots() {
         let now = Instant::now();
         let mut s = Sessions::default();
         s.apply("a", Event::Working, now);
 
         s.apply("a", Event::End, now);
 
-        assert_eq!(s.displayed(now), None);
+        assert!(s.slots(now, 6).is_empty());
     }
 
     #[test]
@@ -127,6 +153,6 @@ mod tests {
         let mut s = Sessions::default();
         s.apply("a", Event::Working, t0);
 
-        assert_eq!(s.displayed(t0 + SESSION_TTL), None);
+        assert!(s.slots(t0 + SESSION_TTL, 6).is_empty());
     }
 }

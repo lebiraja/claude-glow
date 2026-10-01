@@ -33,7 +33,7 @@ installs the systemd user unit and starts it.
 
 ```bash
 claude-glow probe bar1 ff0000 --secs 3     # bar LED 1 turns red for 3 s, keyboard white
-claude-glow send working                   # bar breathes amber
+claude-glow send working                   # orange comet sweeps the bar
 claude-glow send end                       # back to white
 ```
 
@@ -45,8 +45,8 @@ start, so open a **new** Claude session afterwards.
 
 | Hook | Sends | Effect |
 |---|---|---|
-| `SessionStart` | `start` | blue |
-| `UserPromptSubmit`, `PostToolUse` | `working` | amber breathing |
+| `SessionStart` | `start` | blue sweep |
+| `UserPromptSubmit`, `PostToolUse` | `working` | orange comet |
 | `PreToolUse` (matcher `AskUserQuestion`), `Notification` | `ask` | red pulse |
 | `Stop` | `done` | green for 8 s, then blue |
 | `SessionEnd` | `end` | removes the session |
