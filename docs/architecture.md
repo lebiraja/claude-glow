@@ -37,11 +37,13 @@ tiny CLI, which forwards events to a long-running daemon that streams HID frames
 ```
 
 ## State model
-Each live session owns a contiguous segment of the bar, ordered by when it started. LEDs are divided as evenly as
+Each live session owns a contiguous segment of the bar, ordered by slot (a session keeps its slot until it ends, so segments don't swap sides). LEDs are divided as evenly as
 possible (extras go to the earliest sessions). Beyond one session per LED, overflow sessions fold into the last
 slot by priority `Ask > Working > Done > Idle`. No sessions shows the `none` scene. `Done` decays to `Idle` after
 `DONE_HOLD` using timestamps (no timers). Sessions expire after 12 h without an event. Events:
 `start`, `working`, `ask`, `done`, `end`.
+
+With exactly two sessions the halves are mirrored and the two LEDs beside the seam are dimmed to 55%.
 
 Effects are evaluated per LED with a position along the segment (0..1), which is how the comet moves. The comet head
 eases in and out at each end and its tail trails behind it.
@@ -61,6 +63,7 @@ eases in and out at each end and its tail trails behind it.
 | Daemon crash (`kill -9`) | The firmware reverts to your saved lighting mode when frames stop. A clean stop writes the restore packets itself (best effort). |
 | Invalid or partial `scenes.toml` | Invalid: logged and ignored. Partial: only the scenes it defines are overridden. |
 | Scene name missing | That segment renders dark instead of crashing. |
+| Profile with no bar LEDs | Renders nothing instead of panicking. |
 | More than 6 sessions | Overflow folds into the last LED at the highest priority, so a question is never hidden. |
 
 ## Configuration

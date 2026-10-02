@@ -30,17 +30,29 @@ pub fn restore(profile: &Profile, dev: &mut impl HidSink) -> io::Result<()> {
     profile.restore.iter().try_for_each(|p| dev.write(p))
 }
 
+/// Brightness of the two LEDs on either side of the seam between two sessions.
+const SEAM: f32 = 0.55;
+
 /// Target colour for every bar LED. Each live session owns a contiguous segment of the bar;
 /// with no sessions the whole bar shows the `none` scene.
+///
+/// With exactly two sessions the halves are mirror images (their effects move symmetrically about the
+/// centre) and the LEDs beside the seam are dimmed, so two sessions in the same state still read as two.
 fn bar_targets(scenes: &Scenes, slots: &[State], leds: usize, t: Duration) -> Vec<Rgb> {
     let names: Vec<&str> = if slots.is_empty() { vec!["none"] } else { slots.iter().map(|s| s.scene()).collect() };
+    let pair = names.len() == 2;
     let (base, extra) = (leds / names.len(), leds % names.len());
     let mut out = Vec::with_capacity(leds);
     for (k, name) in names.iter().enumerate() {
         let len = base + usize::from(k < extra);
         for j in 0..len {
-            let pos = if len > 1 { j as f32 / (len - 1) as f32 } else { 0.5 };
-            out.push(scenes.get(name).map_or(Rgb::BLACK, |e| e.colour_at(t, pos)));
+            let mut pos = if len > 1 { j as f32 / (len - 1) as f32 } else { 0.5 };
+            if pair && k == 1 {
+                pos = 1.0 - pos;
+            }
+            let seam = pair && ((k == 0 && j == len - 1) || (k == 1 && j == 0));
+            let colour = scenes.get(name).map_or(Rgb::BLACK, |e| e.colour_at(t, pos));
+            out.push(if seam { colour.scale(SEAM) } else { colour });
         }
     }
     out
@@ -171,8 +183,42 @@ mod tests {
     fn two_sessions_split_the_bar_in_halves() {
         let targets = bar_targets(&static_scenes(), &[State::Idle, State::Done], 6, Duration::ZERO);
 
-        assert_eq!(&targets[..3], &[Rgb::new(0, 0, 255); 3]);
-        assert_eq!(&targets[3..], &[Rgb::new(0, 255, 0); 3]);
+        let blue = Rgb::new(0, 0, 255);
+        let green = Rgb::new(0, 255, 0);
+        assert_eq!(targets, vec![blue, blue, blue.scale(SEAM), green.scale(SEAM), green, green]);
+    }
+
+    #[test]
+    fn two_sessions_in_the_same_state_still_show_a_seam() {
+        let targets = bar_targets(&static_scenes(), &[State::Idle, State::Idle], 6, Duration::ZERO);
+
+        assert!(targets[2].b < targets[1].b);
+        assert_eq!(targets[2], targets[3]);
+    }
+
+    #[test]
+    fn two_working_sessions_animate_as_mirror_images() {
+        let scenes = Scenes::bundled();
+
+        for ms in [0, 300, 700, 1100] {
+            let t = bar_targets(&scenes, &[State::Working, State::Working], 6, Duration::from_millis(ms));
+
+            assert_eq!(t[0], t[5], "at {ms} ms");
+            assert_eq!(t[1], t[4], "at {ms} ms");
+            assert_eq!(t[2], t[3], "at {ms} ms");
+        }
+    }
+
+    #[test]
+    fn a_bar_with_no_leds_renders_nothing() {
+        assert!(bar_targets(&static_scenes(), &[State::Idle, State::Ask], 0, Duration::ZERO).is_empty());
+    }
+
+    #[test]
+    fn single_session_has_no_seam() {
+        let targets = bar_targets(&static_scenes(), &[State::Idle], 6, Duration::ZERO);
+
+        assert_eq!(targets, vec![Rgb::new(0, 0, 255); 6]);
     }
 
     #[test]

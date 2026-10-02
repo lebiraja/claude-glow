@@ -47,7 +47,8 @@ struct Entry {
     since: Instant,
     /// Wall-clock twin of `since`, to compare against transcript modification times.
     at: SystemTime,
-    born: Instant,
+    /// Position in the bar, kept for the session's whole life so segments don't swap sides.
+    slot: usize,
     pid: Option<u32>,
     transcript: Option<PathBuf>,
 }
@@ -79,6 +80,7 @@ impl Sessions {
             Event::Done => State::Done,
         };
         let previous = self.0.remove(&msg.session);
+        let slot = previous.as_ref().map_or_else(|| self.free_slot(), |p| p.slot);
         // A repeated SessionStart (resume, compact) must not knock a busy session back to idle.
         let (state, since, at) = match &previous {
             Some(p) if msg.event == Event::Start => (p.state, p.since, p.at),
@@ -90,11 +92,15 @@ impl Sessions {
                 state,
                 since,
                 at,
-                born: previous.as_ref().map_or(now, |p| p.born),
+                slot,
                 pid: msg.pid.or(previous.as_ref().and_then(|p| p.pid)),
                 transcript: msg.transcript.clone().or(previous.and_then(|p| p.transcript)),
             },
         );
+    }
+
+    fn free_slot(&self) -> usize {
+        (0..).find(|slot| self.0.values().all(|e| e.slot != *slot)).expect("unbounded range")
     }
 
     /// Drop sessions that expired or whose process died, and turn interrupted sessions back to idle.
@@ -114,11 +120,14 @@ impl Sessions {
         }
     }
 
-    /// One state per live session, in the order sessions started, at most `max` entries.
+    /// One state per live session in slot order (each session keeps its slot until it ends), at most `max` entries.
     /// Sessions past the limit are folded into the last slot at their highest priority.
     pub fn slots(&self, now: Instant, max: usize) -> Vec<State> {
+        if max == 0 {
+            return Vec::new();
+        }
         let mut live: Vec<_> = self.0.iter().filter(|(_, e)| now.duration_since(e.since) < SESSION_TTL).collect();
-        live.sort_by_key(|(id, e)| (e.born, id.as_str()));
+        live.sort_by_key(|(id, e)| (e.slot, id.as_str()));
         let mut slots: Vec<State> = live.iter().map(|(_, e)| e.effective(now)).collect();
         if slots.len() > max {
             let folded = slots.split_off(max - 1).into_iter().max().expect("overflow is non-empty");
@@ -169,6 +178,38 @@ mod tests {
         apply(&mut s, Event::Done, "a", t0 + Duration::from_secs(2));
 
         assert_eq!(s.slots(t0 + Duration::from_secs(3), 6), vec![State::Done, State::Idle]);
+    }
+
+    #[test]
+    fn zero_leds_means_no_slots_instead_of_a_panic() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Working, "a", now);
+
+        assert!(s.slots(now, 0).is_empty());
+    }
+
+    #[test]
+    fn more_sessions_than_leds_still_fold_into_the_available_slots() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Start, "a", now);
+        apply(&mut s, Event::Ask, "b", now);
+
+        assert_eq!(s.slots(now, 1), vec![State::Ask]);
+    }
+
+    #[test]
+    fn a_surviving_session_keeps_its_side_when_a_new_one_joins() {
+        let t0 = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Start, "a", t0);
+        apply(&mut s, Event::Working, "b", t0);
+        apply(&mut s, Event::End, "a", t0);
+
+        apply(&mut s, Event::Done, "c", t0);
+
+        assert_eq!(s.slots(t0, 6), vec![State::Done, State::Working]);
     }
 
     #[test]

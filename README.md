@@ -10,9 +10,11 @@ Turn your laptop's **lightbar** into a live status light for [Claude Code](https
 | asking you a question / needs permission | red, pulsing |
 | just finished | green for 8 s, then blue |
 
-**Several sessions?** Each open session gets its own segment of the bar (2 sessions: halves, 3: thirds, up to one LED
-each for 6). Segments keep their order and show their own state. With more than 6 sessions the extras share the last
-LED at their highest priority, so a question is never hidden.
+**Several sessions?** Each open session gets its own segment of the bar and shows its own state.
+- **Two sessions** (the polished case): the bar splits into halves that animate as mirror images, with a dim seam in
+  the middle so two sessions in the same state still read as two. Each session keeps its side until it closes.
+- **3 to 6 sessions**: thirds, quarters and so on, down to one LED each.
+- **More than 6**: the extras share the last LED at their highest priority, so a question is never hidden.
 
 The keyboard backlight is left alone. Colours and effects are editable (see [Customising](#customising)).
 
