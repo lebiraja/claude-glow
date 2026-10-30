@@ -27,21 +27,24 @@ sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 This builds the release binary, installs it to `~/.local/bin/claude-glow` (make sure that is on your `PATH`),
-installs the systemd user unit and starts it.
+installs the systemd user unit, (re)starts it, and merges the hooks into `~/.claude/settings.json` (step 5).
+Re-run it after pulling changes: it restarts the daemon so the new binary is used.
 
 ## 4. Smoke test
 
 ```bash
 claude-glow probe bar1 ff0000 --secs 3     # bar LED 1 turns red for 3 s, keyboard white
 claude-glow send working                   # orange comet sweeps the bar
+claude-glow status                         # slot 0 working ... manual
 claude-glow send end                       # back to white
 ```
 
 ## 5. Add the Claude Code hooks
 
-Merge `packaging/hooks.json` into the `hooks` object of `~/.claude/settings.json`. Hook arrays are lists, so
-append these entries to any arrays you already have rather than replacing them. Hooks are read at session
-start, so open a **new** Claude session afterwards. The hooks run synchronously with a 2 s timeout so events always arrive in order.
+`install.sh` does this for you via `scripts/install-hooks.py`: it removes any old claude-glow entries, appends
+the ones from `packaging/hooks.json` with the absolute binary path, keeps all other hooks, and backs the file up
+to `settings.json.bak-claude-glow`. Run it on its own with `python3 scripts/install-hooks.py`. Hooks are read at
+session start, so open a **new** Claude session afterwards. The hooks run synchronously with a 2 s timeout so events always arrive in order.
 
 | Hook | Sends | Effect |
 |---|---|---|
@@ -68,6 +71,10 @@ journalctl --user -u claude-glow -f
 
 | Symptom | Fix |
 |---|---|
+| Wrong colour / a session that isn't open | `claude-glow status` shows what the daemon tracks; `claude-glow send end --session <id>` removes one |
+| Lights flicker, keyboard stays white | Another program streams to the same device. Find it: `for p in /proc/[0-9]*; do ls -l $p/fd 2>/dev/null \| grep -q hidraw0 && cat $p/comm; done`; stop it (e.g. `systemctl --user disable --now rogd`) |
+| Sessions never show their state | Another tool rewrote the hooks; re-run `python3 scripts/install-hooks.py` |
+| Changes not visible after rebuild | Re-run `./scripts/install.sh` (it restarts the service) |
 | Lights never change | `systemctl --user is-active claude-glow`; start a **new** Claude session; check `ls $XDG_RUNTIME_DIR/claude-glow.sock` |
 | `no hidraw device 0b05:19b6` | Your laptop uses a different device; see [profiles.md](profiles.md) |
 | Permission denied | Install the udev rule (step 2) |
@@ -78,6 +85,7 @@ journalctl --user -u claude-glow -f
 ## Uninstall
 
 ```bash
+claude-glow restore
 systemctl --user disable --now claude-glow
 rm ~/.local/bin/claude-glow ~/.config/systemd/user/claude-glow.service
 ```
