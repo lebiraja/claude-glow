@@ -13,7 +13,7 @@ use crate::state::{Sessions, State};
 use crate::{ipc, procfs, registry};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(50);
-const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+const SWEEP_INTERVAL: Duration = Duration::from_millis(200);
 const DEVICE_RETRY: Duration = Duration::from_secs(1);
 const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const CLIENT_MAX_BYTES: u64 = 64 * 1024;

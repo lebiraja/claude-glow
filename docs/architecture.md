@@ -56,7 +56,8 @@ eases in and out at each end and its tail trails behind it.
 |---|---|
 | User interrupts Claude (Esc) or denies a permission | No `Stop` hook fires, but Claude Code writes `[Request interrupted by user…]` as the last transcript entry. The daemon checks the transcript of Working/Ask sessions every second and returns them to idle. |
 | Claude is killed or the terminal closes | No `SessionEnd`. Hooks record the owning `claude` pid; the daemon drops sessions whose process is gone (pid reuse is guarded by checking the process name). |
-| Daemon restarted, or hooks pointed elsewhere | Every second the daemon reads `~/.claude/sessions/*.json` and adds any running session it doesn't know (idle, or working if Claude Code says `busy`). |
+| Session closed | `SessionEnd` removes it at once and marks it ended, so it isn't re-added while Claude Code still lists it for a moment during shutdown (a resume with `SessionStart` brings it back). A session closed without `SessionEnd` is dropped within 0.4 s of leaving Claude Code's session list, or as soon as its process exits. |
+| Daemon restarted, or hooks pointed elsewhere | Every 200 ms the daemon reads `~/.claude/sessions/*.json` and adds any running session it doesn't know (idle, or working if Claude Code says `busy`). |
 | Turn ends without a `Stop` hook (API error, crash mid-turn) | If Claude Code reports the session `idle` for 5 s while we show it working, it returns to idle. Ask and Done are left alone. |
 | Hook input with no `session_id` | Dropped, so it can't create a ghost session. |
 | Missed events of any kind | Working/Ask with no event for 30 min falls back to idle; any session silent for 12 h is dropped. |

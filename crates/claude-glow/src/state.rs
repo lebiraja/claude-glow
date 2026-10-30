@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -14,6 +14,9 @@ const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const ACTIVE_STALE: Duration = Duration::from_secs(30 * 60);
 /// How long Claude Code may still report a session as idle after its working hook, before we believe it.
 const IDLE_GRACE: Duration = Duration::from_secs(5);
+/// Consecutive reconciles a known session may be missing from Claude Code's session list before it is dropped
+/// (more than one, so a file caught mid-write doesn't remove a live session).
+const MISSING_LIMIT: u8 = 2;
 
 /// Declaration order is display priority, lowest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,6 +57,10 @@ struct Entry {
     slot: usize,
     pid: Option<u32>,
     transcript: Option<PathBuf>,
+    /// Seen in Claude Code's session list, so its disappearance from that list means the session closed.
+    listed: bool,
+    /// Consecutive reconciles in which a listed session was missing.
+    misses: u8,
 }
 
 impl Entry {
@@ -68,13 +75,19 @@ impl Entry {
 }
 
 #[derive(Default)]
-pub struct Sessions(HashMap<String, Entry>);
+pub struct Sessions {
+    entries: HashMap<String, Entry>,
+    /// Sessions that sent `end`. Claude Code keeps listing a session (and its process lives) for a moment after
+    /// `SessionEnd`, so these are not re-added from the list or by late hooks. A new `start` (resume) clears it.
+    ended: HashSet<String>,
+}
 
 impl Sessions {
     pub fn apply(&mut self, msg: &Message, now: Instant, at: SystemTime) {
         let state = match msg.event {
             Event::End => {
-                self.0.remove(&msg.session);
+                self.entries.remove(&msg.session);
+                self.ended.insert(msg.session.clone());
                 return;
             }
             Event::Start => State::Idle,
@@ -82,14 +95,19 @@ impl Sessions {
             Event::Ask => State::Ask,
             Event::Done => State::Done,
         };
-        let previous = self.0.remove(&msg.session);
+        if msg.event == Event::Start {
+            self.ended.remove(&msg.session);
+        } else if self.ended.contains(&msg.session) {
+            return;
+        }
+        let previous = self.entries.remove(&msg.session);
         let slot = previous.as_ref().map_or_else(|| self.free_slot(), |p| p.slot);
         // A repeated SessionStart (resume, compact) must not knock a busy session back to idle.
         let (state, since, at) = match &previous {
             Some(p) if msg.event == Event::Start => (p.state, p.since, p.at),
             _ => (state, now, at),
         };
-        self.0.insert(
+        self.entries.insert(
             msg.session.clone(),
             Entry {
                 state,
@@ -97,13 +115,15 @@ impl Sessions {
                 at,
                 slot,
                 pid: msg.pid.or(previous.as_ref().and_then(|p| p.pid)),
-                transcript: msg.transcript.clone().or(previous.and_then(|p| p.transcript)),
+                transcript: msg.transcript.clone().or(previous.as_ref().and_then(|p| p.transcript.clone())),
+                listed: previous.is_some_and(|p| p.listed),
+                misses: 0,
             },
         );
     }
 
     fn free_slot(&self) -> usize {
-        (0..).find(|slot| self.0.values().all(|e| e.slot != *slot)).expect("unbounded range")
+        (0..).find(|slot| self.entries.values().all(|e| e.slot != *slot)).expect("unbounded range")
     }
 
     /// Drop sessions that expired or whose process died, and turn interrupted sessions back to idle.
@@ -114,8 +134,8 @@ impl Sessions {
         alive: impl Fn(u32) -> bool,
         interrupted: impl Fn(&Path, SystemTime) -> bool,
     ) {
-        self.0.retain(|_, e| now.duration_since(e.since) < SESSION_TTL && e.pid.is_none_or(&alive));
-        for e in self.0.values_mut() {
+        self.entries.retain(|_, e| now.duration_since(e.since) < SESSION_TTL && e.pid.is_none_or(&alive));
+        for e in self.entries.values_mut() {
             let busy = matches!(e.effective(now), State::Working | State::Ask);
             if busy && e.transcript.as_deref().is_some_and(|t| interrupted(t, e.at)) {
                 (e.state, e.since, e.at) = (State::Idle, now, at);
@@ -124,11 +144,19 @@ impl Sessions {
     }
 
     /// Sync with the sessions Claude Code reports as running: add sessions we never heard from (daemon
-    /// restarted, hooks missed) and return Working sessions to idle when Claude Code says the turn ended
-    /// without a Stop hook (API error, crash mid-turn).
+    /// restarted, hooks missed), drop sessions that left the list (closed without `SessionEnd`), and return
+    /// Working sessions to idle when Claude Code says the turn ended without a Stop hook (API error, crash mid-turn).
     pub fn reconcile(&mut self, live: &[Live], now: Instant, at: SystemTime) {
+        self.ended.retain(|id| live.iter().any(|l| &l.session_id == id));
+        for e in self.entries.values_mut() {
+            e.misses = e.misses.saturating_add(1);
+        }
         for l in live {
-            if let Some(e) = self.0.get_mut(&l.session_id) {
+            if self.ended.contains(&l.session_id) {
+                continue;
+            }
+            if let Some(e) = self.entries.get_mut(&l.session_id) {
+                (e.listed, e.misses) = (true, 0);
                 e.pid = e.pid.or(Some(l.pid));
                 if e.state == State::Working && l.idle() && now.duration_since(e.since) >= IDLE_GRACE {
                     (e.state, e.since, e.at) = (State::Idle, now, at);
@@ -137,13 +165,15 @@ impl Sessions {
             }
             let state = if l.busy() { State::Working } else { State::Idle };
             let slot = self.free_slot();
-            self.0.insert(l.session_id.clone(), Entry { state, since: now, at, slot, pid: Some(l.pid), transcript: None });
+            let entry = Entry { state, since: now, at, slot, pid: Some(l.pid), transcript: None, listed: true, misses: 0 };
+            self.entries.insert(l.session_id.clone(), entry);
         }
+        self.entries.retain(|_, e| !e.listed || e.misses < MISSING_LIMIT);
     }
 
     /// One line per session in slot order, for `claude-glow status`.
     pub fn describe(&self, now: Instant) -> Vec<String> {
-        let mut all: Vec<_> = self.0.iter().collect();
+        let mut all: Vec<_> = self.entries.iter().collect();
         all.sort_by_key(|(id, e)| (e.slot, id.as_str()));
         all.iter()
             .map(|(id, e)| {
@@ -159,7 +189,7 @@ impl Sessions {
         if max == 0 {
             return Vec::new();
         }
-        let mut live: Vec<_> = self.0.iter().filter(|(_, e)| now.duration_since(e.since) < SESSION_TTL).collect();
+        let mut live: Vec<_> = self.entries.iter().filter(|(_, e)| now.duration_since(e.since) < SESSION_TTL).collect();
         live.sort_by_key(|(id, e)| (e.slot, id.as_str()));
         let mut slots: Vec<State> = live.iter().map(|(_, e)| e.effective(now)).collect();
         if slots.len() > max {
@@ -237,6 +267,56 @@ mod tests {
         s.reconcile(&[live("b", "busy"), live("a", "idle")], now, SystemTime::now());
 
         assert_eq!(s.slots(now, 6), vec![State::Idle, State::Working]);
+    }
+
+    #[test]
+    fn an_ended_session_is_not_re_added_while_claude_still_lists_it() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        s.reconcile(&[live("a", "idle")], now, SystemTime::now());
+
+        apply(&mut s, Event::End, "a", now);
+        s.reconcile(&[live("a", "idle")], now, SystemTime::now());
+        apply(&mut s, Event::Working, "a", now);
+
+        assert!(s.slots(now, 6).is_empty());
+    }
+
+    #[test]
+    fn resuming_an_ended_session_brings_it_back() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::End, "a", now);
+
+        apply(&mut s, Event::Start, "a", now);
+
+        assert_eq!(s.slots(now, 6), vec![State::Idle]);
+    }
+
+    #[test]
+    fn a_listed_session_that_leaves_the_list_is_dropped_after_two_misses() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        s.reconcile(&[live("a", "idle"), live("b", "idle")], now, SystemTime::now());
+
+        s.reconcile(&[live("a", "idle")], now, SystemTime::now());
+        assert_eq!(s.slots(now, 6).len(), 2, "one miss may be a file caught mid-write");
+
+        s.reconcile(&[live("a", "idle")], now, SystemTime::now());
+        assert_eq!(s.slots(now, 6), vec![State::Idle]);
+    }
+
+    #[test]
+    fn hook_only_sessions_are_not_dropped_by_the_list() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Working, "manual", now);
+
+        for _ in 0..3 {
+            s.reconcile(&[], now, SystemTime::now());
+        }
+
+        assert_eq!(s.slots(now, 6), vec![State::Working]);
     }
 
     #[test]
