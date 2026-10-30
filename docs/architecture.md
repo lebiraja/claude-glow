@@ -37,6 +37,8 @@ tiny CLI, which forwards events to a long-running daemon that streams HID frames
 ```
 
 ## State model
+The same slot layout is applied independently to the lightbar (6 LEDs) and the keyboard zones (4 zones, left to right), so with exactly two sessions each half of the keyboard matches its half of the bar.
+
 Each live session owns a contiguous segment of the bar, ordered by slot (a session keeps its slot until it ends, so segments don't swap sides). LEDs are divided as evenly as
 possible (extras go to the earliest sessions). Beyond one session per LED, overflow sessions fold into the last
 slot by priority `Ask > Working > Done > Idle`. No sessions shows the `none` scene. `Done` decays to `Idle` after

@@ -100,8 +100,8 @@ pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
         });
     }
 
-    let bar: Vec<usize> = profile.group_indices("bar").collect();
-    let mut shown = vec![[0.0_f32; 3]; bar.len()];
+    let groups: Vec<Vec<usize>> = ["bar", "keys"].iter().map(|g| profile.group_indices(g).collect()).collect();
+    let mut shown: Vec<Vec<[f32; 3]>> = groups.iter().map(|g| vec![[0.0_f32; 3]; g.len()]).collect();
     let start = Instant::now();
     let (mut dev, mut retry_at, mut warned) = (None::<HidrawDevice>, start, false);
     let mut last_sweep = start;
@@ -111,16 +111,16 @@ pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
             last_sweep = now;
             lock(&sessions).sweep(now, SystemTime::now(), procfs::claude_alive, procfs::transcript_interrupted);
         }
-        let slots = lock(&sessions).slots(now, bar.len());
-        let targets = bar_targets(scenes, &slots, bar.len(), now - start);
-
         let mut frame = Frame::new(profile);
-        frame.set_group(profile, "keys", profile.keyboard_default);
-        for ((led, cur), target) in bar.iter().zip(&mut shown).zip(&targets) {
-            for (c, t) in cur.iter_mut().zip([target.r, target.g, target.b]) {
-                *c += (f32::from(t) - *c) * SMOOTHING;
+        for (leds, shown) in groups.iter().zip(&mut shown) {
+            let slots = lock(&sessions).slots(now, leds.len());
+            let targets = bar_targets(scenes, &slots, leds.len(), now - start);
+            for ((led, cur), target) in leds.iter().zip(shown).zip(&targets) {
+                for (c, t) in cur.iter_mut().zip([target.r, target.g, target.b]) {
+                    *c += (f32::from(t) - *c) * SMOOTHING;
+                }
+                frame.set(*led, Rgb::new(cur[0].round() as u8, cur[1].round() as u8, cur[2].round() as u8));
             }
-            frame.set(*led, Rgb::new(cur[0].round() as u8, cur[1].round() as u8, cur[2].round() as u8));
         }
 
         if dev.is_none() && now >= retry_at {
