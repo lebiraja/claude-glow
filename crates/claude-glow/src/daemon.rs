@@ -1,5 +1,5 @@
 use std::fs::{self, Permissions};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 use aura_hid::{Frame, HidSink, HidrawDevice, Profile, Rgb, Scenes};
 
 use crate::state::{Sessions, State};
-use crate::{ipc, procfs};
+use crate::{ipc, procfs, registry};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(50);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
@@ -44,7 +44,10 @@ fn bar_targets(scenes: &Scenes, slots: &[State], leds: usize, t: Duration) -> Ve
     let (base, extra) = (leds / names.len(), leds % names.len());
     let mut out = Vec::with_capacity(leds);
     for (k, name) in names.iter().enumerate() {
-        let len = base + usize::from(k < extra);
+        // Leftover LEDs go to the outermost segments first, so the layout stays symmetric (4 on 6 is 2,1,1,2).
+        let outer = k.min(names.len() - 1 - k);
+        let rank = 2 * outer + usize::from(k > names.len() - 1 - k);
+        let len = base + usize::from(rank < extra);
         for j in 0..len {
             let mut pos = if len > 1 { j as f32 / (len - 1) as f32 } else { 0.5 };
             if pair && k == 1 {
@@ -62,7 +65,14 @@ fn handle_client(stream: UnixStream, sessions: &Shared) {
     if stream.set_read_timeout(Some(CLIENT_READ_TIMEOUT)).is_err() {
         return;
     }
+    let Ok(mut reply) = stream.try_clone() else { return };
     for line in BufReader::new(stream.take(CLIENT_MAX_BYTES)).lines().map_while(Result::ok) {
+        if line.trim() == ipc::STATUS_REQUEST {
+            let lines = lock(sessions).describe(Instant::now());
+            let text = if lines.is_empty() { "no sessions\n".to_owned() } else { lines.join("\n") + "\n" };
+            let _ = reply.write_all(text.as_bytes());
+            return;
+        }
         if let Some(msg) = ipc::parse_line(&line) {
             lock(sessions).apply(&msg, Instant::now(), SystemTime::now());
         }
@@ -100,8 +110,8 @@ pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
         });
     }
 
-    let bar: Vec<usize> = profile.group_indices("bar").collect();
-    let mut shown = vec![[0.0_f32; 3]; bar.len()];
+    let groups: Vec<Vec<usize>> = ["bar", "keys"].iter().map(|g| profile.group_indices(g).collect()).collect();
+    let mut shown: Vec<Vec<[f32; 3]>> = groups.iter().map(|g| vec![[0.0_f32; 3]; g.len()]).collect();
     let start = Instant::now();
     let (mut dev, mut retry_at, mut warned) = (None::<HidrawDevice>, start, false);
     let mut last_sweep = start;
@@ -109,18 +119,22 @@ pub fn run(profile: &Profile, scenes: &Scenes) -> io::Result<()> {
         let now = Instant::now();
         if now.duration_since(last_sweep) >= SWEEP_INTERVAL {
             last_sweep = now;
-            lock(&sessions).sweep(now, SystemTime::now(), procfs::claude_alive, procfs::transcript_interrupted);
+            let mut live = registry::dir().map(|d| registry::read(&d)).unwrap_or_default();
+            live.retain(|l| procfs::claude_alive(l.pid));
+            let mut s = lock(&sessions);
+            s.sweep(now, SystemTime::now(), procfs::claude_alive, procfs::transcript_interrupted);
+            s.reconcile(&live, now, SystemTime::now());
         }
-        let slots = lock(&sessions).slots(now, bar.len());
-        let targets = bar_targets(scenes, &slots, bar.len(), now - start);
-
         let mut frame = Frame::new(profile);
-        frame.set_group(profile, "keys", profile.keyboard_default);
-        for ((led, cur), target) in bar.iter().zip(&mut shown).zip(&targets) {
-            for (c, t) in cur.iter_mut().zip([target.r, target.g, target.b]) {
-                *c += (f32::from(t) - *c) * SMOOTHING;
+        for (leds, shown) in groups.iter().zip(&mut shown) {
+            let slots = lock(&sessions).slots(now, leds.len());
+            let targets = bar_targets(scenes, &slots, leds.len(), now - start);
+            for ((led, cur), target) in leds.iter().zip(shown).zip(&targets) {
+                for (c, t) in cur.iter_mut().zip([target.r, target.g, target.b]) {
+                    *c += (f32::from(t) - *c) * SMOOTHING;
+                }
+                frame.set(*led, Rgb::new(cur[0].round() as u8, cur[1].round() as u8, cur[2].round() as u8));
             }
-            frame.set(*led, Rgb::new(cur[0].round() as u8, cur[1].round() as u8, cur[2].round() as u8));
         }
 
         if dev.is_none() && now >= retry_at {
@@ -222,15 +236,28 @@ mod tests {
     }
 
     #[test]
-    fn four_sessions_share_six_leds_two_two_one_one() {
-        let slots = [State::Idle, State::Done, State::Ask, State::Idle];
+    fn four_sessions_share_six_leds_symmetrically() {
+        let (blue, green, red) = (Rgb::new(0, 0, 255), Rgb::new(0, 255, 0), Rgb::new(255, 0, 0));
 
-        let targets = bar_targets(&static_scenes(), &slots, 6, Duration::ZERO);
+        let targets = bar_targets(&static_scenes(), &[State::Idle, State::Done, State::Ask, State::Idle], 6, Duration::ZERO);
 
-        assert_eq!(targets[0], targets[1]);
-        assert_eq!(targets[2], targets[3]);
-        assert_ne!(targets[1], targets[2]);
-        assert_eq!(targets.len(), 6);
+        assert_eq!(targets, vec![blue, blue, green, red, blue, blue]);
+    }
+
+    #[test]
+    fn three_sessions_share_six_leds_two_each() {
+        let (blue, green, red) = (Rgb::new(0, 0, 255), Rgb::new(0, 255, 0), Rgb::new(255, 0, 0));
+
+        let targets = bar_targets(&static_scenes(), &[State::Idle, State::Done, State::Ask], 6, Duration::ZERO);
+
+        assert_eq!(targets, vec![blue, blue, green, green, red, red]);
+    }
+
+    #[test]
+    fn four_sessions_get_one_keyboard_zone_each() {
+        let targets = bar_targets(&static_scenes(), &[State::Idle, State::Done, State::Ask, State::Idle], 4, Duration::ZERO);
+
+        assert_eq!(targets, vec![Rgb::new(0, 0, 255), Rgb::new(0, 255, 0), Rgb::new(255, 0, 0), Rgb::new(0, 0, 255)]);
     }
 
     #[test]

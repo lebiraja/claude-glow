@@ -1,8 +1,8 @@
 # claude-glow
 
-Turn your laptop's **lightbar** into a live status light for [Claude Code](https://claude.com/claude-code).
+Turn your laptop's **lightbar and keyboard** into a live status light for [Claude Code](https://claude.com/claude-code).
 
-| Claude is… | Lightbar |
+| Claude is… | Lightbar and keyboard |
 |---|---|
 | not running | white |
 | open, waiting for you | blue light sweeping slowly end to end and back |
@@ -10,13 +10,23 @@ Turn your laptop's **lightbar** into a live status light for [Claude Code](https
 | asking you a question / needs permission | red, pulsing |
 | just finished | green for 8 s, then blue |
 
-**Several sessions?** Each open session gets its own segment of the bar and shows its own state.
-- **Two sessions** (the polished case): the bar splits into halves that animate as mirror images, with a dim seam in
-  the middle so two sessions in the same state still read as two. Each session keeps its side until it closes.
-- **3 to 6 sessions**: thirds, quarters and so on, down to one LED each.
-- **More than 6**: the extras share the last LED at their highest priority, so a question is never hidden.
+**Several sessions?** Each open session gets its own segment of the bar *and* of the keyboard (4 zones, left to
+right), shows its own state, and keeps its side until it closes.
 
-The keyboard backlight is left alone. Colours and effects are editable (see [Customising](#customising)).
+| Sessions | Lightbar (6 LEDs) | Keyboard (4 zones) |
+|---|---|---|
+| 1 | whole bar | whole keyboard |
+| 2 | 3 + 3, mirrored, dim seam in the middle | 2 + 2 |
+| 3 | 2 + 2 + 2 | 2 + 1 + 1 |
+| 4 | 2 + 1 + 1 + 2 | 1 each |
+| more | down to one LED each; extras share the last LED at their highest priority, so a question is never hidden | same |
+
+Sessions are also discovered from Claude Code's own session list, so they show up after a daemon restart and a
+turn that ended without a `Stop` hook (API error) still goes back to blue. Run `claude-glow status` to see what
+the daemon is tracking. Colours and effects are editable (see [Customising](#customising)).
+
+> **One writer only:** don't run another program that streams to the Aura device at the same time (e.g. `rogd`,
+> OpenRGB). Two streams alternate frames and the lights flicker.
 
 > **Status:** tested on the **ASUS ROG Strix G16 (G614JU)** on Linux (CachyOS/Arch). Other ASUS Aura laptops
 > may work by adding a [device profile](docs/profiles.md). This is an unofficial, reverse-engineered tool and is
@@ -32,13 +42,15 @@ Reverse-engineering the HID protocol showed that a **streamed zoned frame** driv
 
 ```text
 Claude Code hook ──► claude-glow hook <event> ──► Unix socket ──► claude-glow daemon
+~/.claude/sessions/*.json (live sessions) ─── every 1 s ───────────────┤
                                                                        │
                        session state + priority  ◄─────────────────────┤
-                       scene (effect + colour)   ──► 20 fps frames ────┴──► /dev/hidraw0 ──► lightbar
+                       scene (effect + colour)   ──► 20 fps frames ────┴──► /dev/hidraw0 ──► lightbar + keyboard
 ```
 
 - Hooks fire on Claude Code events and send one line to the daemon.
-- The daemon tracks every open session and gives each one a segment of the bar, showing that session's state.
+- The daemon tracks every open session and gives each one a segment of the bar and keyboard, showing that session's state.
+- Every second it cross-checks Claude Code's live-session files to add sessions it missed and clear turns that ended silently.
 - It renders the scenes at 20 fps with smoothing between frames. The firmware only holds a custom colour while frames keep arriving.
 - On stop (or crash) the daemon restores your saved lighting mode.
 
@@ -52,8 +64,9 @@ cd claude-glow
 ./scripts/install.sh
 ```
 
-Then add the hooks from [`packaging/hooks.json`](packaging/hooks.json) to `~/.claude/settings.json`
-(merge them into your existing `hooks` entries) and start a new Claude session. Full steps and
+The script builds and installs the binary, enables the systemd user service and merges the hooks from
+[`packaging/hooks.json`](packaging/hooks.json) into `~/.claude/settings.json` (other hooks are kept, a backup is
+written to `settings.json.bak-claude-glow`). Start a new Claude session, then check `claude-glow status`. Full steps and
 troubleshooting are in [docs/setup.md](docs/setup.md).
 
 ## Customising
@@ -85,6 +98,7 @@ constant in [`crates/claude-glow/src/state.rs`](crates/claude-glow/src/state.rs)
 claude-glow daemon                 run the frame-streaming daemon (the systemd unit does this)
 claude-glow hook <event>           called by Claude Code hooks; reads hook JSON on stdin
 claude-glow send <event>           send an event by hand: start | working | ask | done | end
+claude-glow status                 list tracked sessions: slot, state, age, pid, session id
 claude-glow probe <led|group>      light one LED (bar1..bar6, key1..key4) or group (bar, keys) for a few seconds
 claude-glow restore                put the laptop back in its saved lighting mode
 ```
@@ -95,6 +109,7 @@ claude-glow restore                put the laptop back in its saved lighting mod
 crates/aura-hid/     library: device profiles, frame builder, effects, scenes, hidraw output
 crates/claude-glow/  binary: daemon, session state machine, socket IPC, hook command
 packaging/           systemd unit, udev rule, hook snippet
+scripts/             install.sh, install-hooks.py (idempotent hook merge)
 docs/                setup, architecture, protocol notes, adding a device
 ```
 
