@@ -16,6 +16,8 @@ len = 64
 init = [0x5d, 0xbc]
 header = [0x5d, 0xbc, 0x01, 0x01, 0x04]
 
+# LEDs of each group are listed in physical order, left to right, so segment layouts line up
+# across groups. The bar offsets run right to left (offset 27 is the rightmost LED).
 [[leds]]
 name = "key1"
 group = "keys"
@@ -37,24 +39,9 @@ group = "keys"
 offset = 18
 
 [[leds]]
-name = "bar1"
+name = "bar6"
 group = "bar"
-offset = 27
-
-[[leds]]
-name = "bar2"
-group = "bar"
-offset = 30
-
-[[leds]]
-name = "bar3"
-group = "bar"
-offset = 33
-
-[[leds]]
-name = "bar4"
-group = "bar"
-offset = 36
+offset = 42
 
 [[leds]]
 name = "bar5"
@@ -62,6 +49,21 @@ group = "bar"
 offset = 39
 
 [[leds]]
-name = "bar6"
+name = "bar4"
 group = "bar"
-offset = 42
+offset = 36
+
+[[leds]]
+name = "bar3"
+group = "bar"
+offset = 33
+
+[[leds]]
+name = "bar2"
+group = "bar"
+offset = 30
+
+[[leds]]
+name = "bar1"
+group = "bar"
+offset = 27

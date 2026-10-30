@@ -26,6 +26,10 @@ group = "bar"                     # frames address groups ("bar", "keys")
 offset = 27                       # byte offset of the R,G,B triple in the packet
 ```
 
+List the LEDs of every group in **physical order, left to right**. Sessions get segments in that order, so if
+one group is listed right to left its layout comes out mirrored against the others (on the G614JU the bar offsets run
+right to left, so the bar is listed from `bar6`, offset 42, down to `bar1`, offset 27).
+
 Rules enforced at load time: LED names are unique, every `offset + 3` fits in `len`, and the header fits in `len`.
 
 ## Trying another laptop
