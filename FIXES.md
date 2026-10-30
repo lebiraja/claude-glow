@@ -1,3 +1,9 @@
+## 2026-10-30 — Closed session lingered on the bar
+**Symptom:** After closing one of two sessions, the bar and keyboard stayed split in two for a while.
+**Root cause:** `SessionEnd` removed the session, but Claude Code keeps the session file and process alive briefly during shutdown, so the next reconcile re-added it as idle until the process exited. Polling once per second added further delay.
+**Fix:** Ended sessions are tombstoned and not re-added by the session list or late hooks; a `start` clears the tombstone (`crates/claude-glow/src/state.rs`, `Sessions::apply`/`reconcile`). Sessions that leave Claude Code's list are dropped after 2 missed polls, and the poll runs every 200 ms (`crates/claude-glow/src/daemon.rs`, `SWEEP_INTERVAL`).
+**Verified:** 66 tests pass. Live timing with a real `claude -p` session: dropped as soon as `SessionEnd` fired and not re-added during the following 1 s while its file and process still existed.
+
 ## 2026-10-30 — Keyboard and lightbar segments on opposite sides
 **Symptom:** A session's segment was on the left of the keyboard but on the right of the lightbar (e.g. "done" green).
 **Root cause:** `g614ju.toml` listed the keyboard zones left to right but the bar LEDs in offset order, which is right to left (offset 27 is the rightmost LED). Segments are laid out in profile order, so the bar came out mirrored.

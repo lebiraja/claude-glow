@@ -42,7 +42,7 @@ Reverse-engineering the HID protocol showed that a **streamed zoned frame** driv
 
 ```text
 Claude Code hook ──► claude-glow hook <event> ──► Unix socket ──► claude-glow daemon
-~/.claude/sessions/*.json (live sessions) ─── every 1 s ───────────────┤
+~/.claude/sessions/*.json (live sessions) ─── every 200 ms ────────────┤
                                                                        │
                        session state + priority  ◄─────────────────────┤
                        scene (effect + colour)   ──► 20 fps frames ────┴──► /dev/hidraw0 ──► lightbar + keyboard
@@ -50,7 +50,7 @@ Claude Code hook ──► claude-glow hook <event> ──► Unix socket ──
 
 - Hooks fire on Claude Code events and send one line to the daemon.
 - The daemon tracks every open session and gives each one a segment of the bar and keyboard, showing that session's state.
-- Every second it cross-checks Claude Code's live-session files to add sessions it missed and clear turns that ended silently.
+- Every 200 ms it cross-checks Claude Code's live-session files to add sessions it missed and clear turns that ended silently.
 - It renders the scenes at 20 fps with smoothing between frames. The firmware only holds a custom colour while frames keep arriving.
 - On stop (or crash) the daemon restores your saved lighting mode.
 
