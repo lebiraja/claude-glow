@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -31,6 +31,20 @@ pub fn send(msg: &Message) -> std::io::Result<()> {
     let mut line = serde_json::to_string(msg).map_err(std::io::Error::other)?;
     line.push('\n');
     stream.write_all(line.as_bytes())
+}
+
+/// Line a client sends to ask the daemon for its session list; the reply is plain text.
+pub const STATUS_REQUEST: &str = "status";
+
+pub fn status() -> std::io::Result<String> {
+    let mut stream = UnixStream::connect(socket_path())?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    stream.set_read_timeout(Some(WRITE_TIMEOUT))?;
+    stream.write_all(format!("{STATUS_REQUEST}\n").as_bytes())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut out = String::new();
+    stream.read_to_string(&mut out)?;
+    Ok(out)
 }
 
 pub fn parse_line(line: &str) -> Option<Message> {

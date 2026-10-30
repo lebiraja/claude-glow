@@ -6,11 +6,14 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::ipc::Message;
+use crate::registry::Live;
 
 pub const DONE_HOLD: Duration = Duration::from_secs(8);
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 /// Working/Ask with no event for this long means we missed the end of the turn (e.g. an interrupt).
 const ACTIVE_STALE: Duration = Duration::from_secs(30 * 60);
+/// How long Claude Code may still report a session as idle after its working hook, before we believe it.
+const IDLE_GRACE: Duration = Duration::from_secs(5);
 
 /// Declaration order is display priority, lowest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -120,6 +123,36 @@ impl Sessions {
         }
     }
 
+    /// Sync with the sessions Claude Code reports as running: add sessions we never heard from (daemon
+    /// restarted, hooks missed) and return Working sessions to idle when Claude Code says the turn ended
+    /// without a Stop hook (API error, crash mid-turn).
+    pub fn reconcile(&mut self, live: &[Live], now: Instant, at: SystemTime) {
+        for l in live {
+            if let Some(e) = self.0.get_mut(&l.session_id) {
+                e.pid = e.pid.or(Some(l.pid));
+                if e.state == State::Working && l.idle() && now.duration_since(e.since) >= IDLE_GRACE {
+                    (e.state, e.since, e.at) = (State::Idle, now, at);
+                }
+                continue;
+            }
+            let state = if l.busy() { State::Working } else { State::Idle };
+            let slot = self.free_slot();
+            self.0.insert(l.session_id.clone(), Entry { state, since: now, at, slot, pid: Some(l.pid), transcript: None });
+        }
+    }
+
+    /// One line per session in slot order, for `claude-glow status`.
+    pub fn describe(&self, now: Instant) -> Vec<String> {
+        let mut all: Vec<_> = self.0.iter().collect();
+        all.sort_by_key(|(id, e)| (e.slot, id.as_str()));
+        all.iter()
+            .map(|(id, e)| {
+                let pid = e.pid.map_or_else(|| "-".to_owned(), |p| p.to_string());
+                format!("slot {} {:<8} {}s pid {pid} {id}", e.slot, e.effective(now).scene(), now.duration_since(e.since).as_secs())
+            })
+            .collect()
+    }
+
     /// One state per live session in slot order (each session keeps its slot until it ends), at most `max` entries.
     /// Sessions past the limit are folded into the last slot at their highest priority.
     pub fn slots(&self, now: Instant, max: usize) -> Vec<State> {
@@ -151,6 +184,59 @@ mod tests {
 
     fn sweep_with(s: &mut Sessions, now: Instant, alive: bool, interrupted: bool) {
         s.sweep(now, SystemTime::now(), |_| alive, |_, _| interrupted);
+    }
+
+    fn live(id: &str, status: &str) -> Live {
+        Live { pid: 7, session_id: id.into(), status: Some(status.into()) }
+    }
+
+    #[test]
+    fn reconcile_adds_sessions_we_never_heard_from() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+
+        s.reconcile(&[live("a", "idle"), live("b", "busy")], now, SystemTime::now());
+
+        let mut slots = s.slots(now, 6);
+        slots.sort();
+        assert_eq!(slots, vec![State::Idle, State::Working]);
+    }
+
+    #[test]
+    fn reconcile_ends_a_working_turn_claude_reports_idle_after_the_grace() {
+        let t0 = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Working, "a", t0);
+
+        s.reconcile(&[live("a", "idle")], t0 + Duration::from_secs(1), SystemTime::now());
+        assert_eq!(s.slots(t0 + Duration::from_secs(1), 6), vec![State::Working]);
+
+        s.reconcile(&[live("a", "idle")], t0 + IDLE_GRACE, SystemTime::now());
+        assert_eq!(s.slots(t0 + IDLE_GRACE, 6), vec![State::Idle]);
+    }
+
+    #[test]
+    fn reconcile_leaves_questions_and_done_alone() {
+        let t0 = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Ask, "a", t0);
+        apply(&mut s, Event::Done, "b", t0);
+        let later = t0 + Duration::from_secs(6);
+
+        s.reconcile(&[live("a", "idle"), live("b", "idle")], later, SystemTime::now());
+
+        assert_eq!(s.slots(later, 6), vec![State::Ask, State::Done]);
+    }
+
+    #[test]
+    fn reconcile_keeps_existing_slots() {
+        let now = Instant::now();
+        let mut s = Sessions::default();
+        apply(&mut s, Event::Start, "a", now);
+
+        s.reconcile(&[live("b", "busy"), live("a", "idle")], now, SystemTime::now());
+
+        assert_eq!(s.slots(now, 6), vec![State::Idle, State::Working]);
     }
 
     #[test]

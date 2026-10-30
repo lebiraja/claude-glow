@@ -1,6 +1,7 @@
 mod daemon;
 mod ipc;
 mod procfs;
+mod registry;
 mod state;
 
 use std::io::{self, IsTerminal, Read};
@@ -34,6 +35,8 @@ enum Command {
         #[arg(long, default_value = "manual")]
         session: String,
     },
+    /// Show the sessions the daemon is tracking.
+    Status,
     /// Light one LED (e.g. bar3) or group (keys, bar) for a few seconds, keyboard white.
     Probe {
         target: String,
@@ -85,9 +88,11 @@ fn hook(event: Event) {
     if event == Event::Ask && !is_question(input.notification_type.as_deref()) {
         return;
     }
+    // Without a session id the event can't be tied to a session; guessing one leaves a ghost segment.
+    let Some(session) = input.session_id else { return };
     let msg = Message {
         event,
-        session: input.session_id.unwrap_or_else(|| "unknown".to_owned()),
+        session,
         pid: procfs::claude_ancestor(),
         transcript: input.transcript_path,
     };
@@ -124,6 +129,10 @@ fn main() -> io::Result<()> {
             Ok(())
         }
         Command::Send { event, session } => ipc::send(&Message { event, session, pid: None, transcript: None }),
+        Command::Status => {
+            ipc::status()?.lines().for_each(|l| println!("{l}"));
+            Ok(())
+        }
         Command::Probe { target, colour, secs } => probe(&profile, &target, colour, secs),
         Command::Restore => daemon::restore(&profile, &mut HidrawDevice::open(&profile)?),
     }

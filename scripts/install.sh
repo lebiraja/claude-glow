@@ -7,5 +7,6 @@ cargo build --release
 install -Dm755 target/release/claude-glow "$HOME/.local/bin/claude-glow"
 install -Dm644 packaging/claude-glow.service "$HOME/.config/systemd/user/claude-glow.service"
 systemctl --user daemon-reload
-systemctl --user enable --now claude-glow
+systemctl --user enable claude-glow
+systemctl --user restart claude-glow
 echo "Installed. Now add the hooks: see docs/setup.md (packaging/hooks.json)."
