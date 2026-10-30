@@ -82,13 +82,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_profile_loads_with_four_keys_and_six_bar_leds() {
+    fn bundled_profile_lists_groups_left_to_right() {
         let p = Profile::g614ju();
 
         assert_eq!((p.vid, p.pid), (0x0b05, 0x19b6));
         assert_eq!(p.group_indices("keys").count(), 4);
         assert_eq!(p.group_indices("bar").count(), 6);
-        assert_eq!(p.led_index("bar1"), Some(4));
+        assert_eq!(p.led_index("bar6"), Some(4));
+        assert_eq!(p.led_index("bar1"), Some(9));
+        let bar: Vec<usize> = p.group_indices("bar").map(|i| p.leds[i].offset).collect();
+        assert_eq!(bar, vec![42, 39, 36, 33, 30, 27], "bar must run left to right like the keys");
     }
 
     #[test]
